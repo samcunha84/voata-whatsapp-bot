@@ -230,43 +230,68 @@ def _first_nonempty(*vals):
 @app.route("/zapi-webhook", methods=["POST"])
 def zapi_webhook():
     data = request.get_json(force=True, silent=True) or {}
-    print(">>> ZAPI IN RAW:", json.dumps(data)[:500])
+    print(">>> ZAPI IN RAW:", json.dumps(data)[:800])
 
-    # Extrai número e texto de forma tolerante a variações do payload da Z-API
+    # FLAGS que a Z-API costuma enviar
+    is_group        = bool(data.get("isGroup"))
+    is_newsletter   = bool(data.get("isNewsletter"))
+    from_me_root    = bool(data.get("fromMe"))
+    status_flag     = (data.get("status") or "").upper()     # e.g. SENT, DELIVERED, READ, RECEIVED
+    message_obj     = data.get("message") or {}
+
+    # Alguns planos mandam fromMe também dentro de "message"
+    from_me_nested  = bool(message_obj.get("fromMe"))
+
+    # Ignorar tudo que não é uma mensagem de usuário "de fora"
+    if is_group or is_newsletter:
+        print(">>> IGNORE: group/newsletter")
+        return jsonify({"status": "ignored", "reason": "group/newsletter"}), 200
+
+    if from_me_root or from_me_nested:
+        print(">>> IGNORE: our own message (fromMe=True)")
+        return jsonify({"status": "ignored", "reason": "fromMe"}), 200
+
+    # Muitos webhooks de status vêm sem texto – ignorar
+    if status_flag and status_flag != "RECEIVED":
+        print(f">>> IGNORE: status event {status_flag}")
+        return jsonify({"status": "ignored", "reason": f"status:{status_flag}"}), 200
+
+    # Extrair remetente e texto com tolerância
     from_phone = _first_nonempty(
         data.get("phone"),
         data.get("from"),
         data.get("sender"),
-        (data.get("message") or {}).get("from"),
-        (data.get("data") or {}).get("from"),
+        message_obj.get("from"),
+        (data.get("conversation") or {}).get("phone"),
         (data.get("contact") or {}).get("phone"),
     )
 
     text = _first_nonempty(
-        data.get("message"),
         data.get("text"),
         data.get("body"),
-        (data.get("message") or {}).get("text"),
-        (data.get("message") or {}).get("body"),
+        data.get("message") if isinstance(data.get("message"), str) else "",
+        message_obj.get("text"),
+        message_obj.get("body"),
         (data.get("data") or {}).get("body"),
     )
 
     if not from_phone:
-        print(">>> ZAPI IN: sem 'from_phone' — ignorado")
-        return jsonify({"status": "ignored_no_from"}), 200
+        print(">>> IGNORE: no from_phone")
+        return jsonify({"status": "ignored", "reason": "no_from"}), 200
 
     if not text:
-        print(">>> ZAPI IN: sem 'text' — enviando aviso padrão")
-        send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
-        return jsonify({"status": "ok"}), 200
+        print(">>> IN: sem texto -> não responder (evita loop)")
+        return jsonify({"status": "ignored", "reason": "no_text"}), 200
 
     print("FROM_RAW_ZAPI:", from_phone)
-    print("TEXT_IN:", text)
+    print("TEXT_IN:", text[:200])
 
+    # LLM
     llm_out = run_llm(text)
     print("---- LLM RAW (ZAPI) ----\n", llm_out)
     wa_msg, crm_json = parse_llm_output(llm_out)
     print("---- CRM_ACTION (ZAPI) ----\n", crm_json)
 
+    # Responder
     send_whatsapp_text(from_phone, wa_msg)
     return jsonify({"status": "ok"}), 200
