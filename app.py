@@ -129,7 +129,7 @@ def parse_llm_output(text: str):
 
 # ====== WhatsApp API ======
 def send_whatsapp_text(to: str, body: str):
-    url = f"https://graph.facebook.com/v19.0/{WHATSAPP_PHONE_ID}/messages"
+    url = f"https://graph.facebook.com/v24.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
