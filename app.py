@@ -217,3 +217,54 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
+# ===== Z-API incoming webhook =====
+def _first_nonempty(*vals):
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+@app.route("/zapi-webhook", methods=["POST"])
+def zapi_webhook():
+    data = request.get_json(force=True, silent=True) or {}
+    print(">>> ZAPI IN RAW:", json.dumps(data)[:500])
+
+    # Extrai número e texto de forma tolerante a variações do payload da Z-API
+    from_phone = _first_nonempty(
+        data.get("phone"),
+        data.get("from"),
+        data.get("sender"),
+        (data.get("message") or {}).get("from"),
+        (data.get("data") or {}).get("from"),
+        (data.get("contact") or {}).get("phone"),
+    )
+
+    text = _first_nonempty(
+        data.get("message"),
+        data.get("text"),
+        data.get("body"),
+        (data.get("message") or {}).get("text"),
+        (data.get("message") or {}).get("body"),
+        (data.get("data") or {}).get("body"),
+    )
+
+    if not from_phone:
+        print(">>> ZAPI IN: sem 'from_phone' — ignorado")
+        return jsonify({"status": "ignored_no_from"}), 200
+
+    if not text:
+        print(">>> ZAPI IN: sem 'text' — enviando aviso padrão")
+        send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
+        return jsonify({"status": "ok"}), 200
+
+    print("FROM_RAW_ZAPI:", from_phone)
+    print("TEXT_IN:", text)
+
+    llm_out = run_llm(text)
+    print("---- LLM RAW (ZAPI) ----\n", llm_out)
+    wa_msg, crm_json = parse_llm_output(llm_out)
+    print("---- CRM_ACTION (ZAPI) ----\n", crm_json)
+
+    send_whatsapp_text(from_phone, wa_msg)
+    return jsonify({"status": "ok"}), 200
