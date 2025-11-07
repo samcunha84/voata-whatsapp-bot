@@ -136,20 +136,16 @@ def parse_llm_output(text: str):
 GRAPH_VERSION = "v24.0"
 
 def send_whatsapp_text(to: str, body: str):
-    # Normaliza para somente dígitos (Z-API prefere sem '+')
-    to = "".join(ch for ch in (to or "") if ch.isdigit())
+    to = to.strip()
+    if not to.startswith("+"):
+        to = "+" + to
 
     ZAPI_INSTANCE = "3E53BE161E0B2107E3C2428BC0F148DA"
-    ZAPI_TOKEN = "85E59C4B87C6C6CE65A2333C"
-
+    ZAPI_TOKEN    = "85E59C4B87C6C6CE65A2333C"
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
+
     print(">>> ENVIANDO VIA Z-API PARA:", to)
-
-    data = {
-        "phone": to,
-        "message": body or ""
-    }
-
+    data = {"phone": to, "message": body}
     try:
         resp = requests.post(url, json=data, timeout=20)
         print("=== ZAPI RESP ===", resp.status_code, resp.text[:400])
