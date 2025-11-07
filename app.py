@@ -142,7 +142,7 @@ def send_whatsapp_text(to: str, body: str):
         to = "+" + to
 
     ZAPI_INSTANCE = "3E53BE161E0B2107E3C2428BC0F148DA"
-    ZAPI_TOKEN = "85E59C4B87C6C6CE65A2333C"
+    ZAPI_TOKEN = "Ff4a66155deda48cabaa78618eb1bf981S"
 
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
 
