@@ -143,7 +143,7 @@ def send_whatsapp_text(to: str, body: str):
         }
         try:
             resp = requests.post(url, json=data, headers=headers, timeout=20)
-            print("=== SEND RESP ===", resp.status_code, resp.text)
+            print("=== SEND RESP ===", resp.status_code, resp.text[:300])
         except Exception as e:
             print("=== SEND ERROR ===", e)
 
