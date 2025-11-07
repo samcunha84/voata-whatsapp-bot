@@ -165,36 +165,38 @@ def send_whatsapp_text(to: str, body: str):
 # ========= Flask =========
 app = Flask(__name__)
 
+# ===== NOVA ROTA PARA Z-API =====
 @app.route("/zapi-webhook", methods=["POST"])
 def zapi_webhook():
     data = request.get_json(force=True, silent=True) or {}
-    print(">>> ZAPI IN RAW:", json.dumps(data)[:700])
+    print(">>> ZAPI IN RAW:", json.dumps(data)[:800])
 
-    # Ignora grupos, newsletters, status e mensagens enviadas pelo próprio bot
+    if data.get("fromMe") is True or (data.get("message") or {}).get("fromMe") is True:
+        return jsonify({"status": "ignored", "reason": "fromMe"}), 200
+
     if data.get("isGroup") or data.get("isNewsletter"):
-        return jsonify({"status": "ignored_group"}), 200
+        return jsonify({"status": "ignored", "reason": "group"}), 200
 
-    if data.get("fromMe") or (data.get("message") or {}).get("fromMe"):
-        return jsonify({"status": "ignored_from_me"}), 200
+    from_phone = str(data.get("phone") or data.get("from") or "").strip()
+    if not from_phone.startswith("+"):
+        from_phone = "+" + from_phone
 
-    status = (data.get("status") or "").upper()
-    if status and status not in ["RECEIVED"]:
-        return jsonify({"status": "ignored_status"}), 200
+    msg = data.get("message")
+    if isinstance(msg, dict):
+        text = msg.get("text") or msg.get("body") or ""
+    else:
+        text = data.get("text") or data.get("body") or (msg or "")
 
-    # Extrai remetente e texto
-    from_phone = (data.get("phone") or data.get("from") or "").strip()
-    text = (data.get("text") or (data.get("message") or {}).get("text") or "").strip()
+    text = text.strip() if isinstance(text, str) else ""
 
-    if not from_phone or not text:
-        return jsonify({"status": "ignored_no_text"}), 200
+    if not text:
+        send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
+        return jsonify({"status": "ok"}), 200
 
-    print("FROM:", from_phone, "| TEXT:", text)
+    print("FROM:", from_phone, "TEXT:", text[:200])
 
-    # Gera resposta pelo modelo
     llm_out = run_llm(text)
     wa_msg, crm_json = parse_llm_output(llm_out)
-
-    # Envia ao usuário
     send_whatsapp_text(from_phone, wa_msg)
 
     return jsonify({"status": "ok"}), 200
