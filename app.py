@@ -165,133 +165,36 @@ def send_whatsapp_text(to: str, body: str):
 # ========= Flask =========
 app = Flask(__name__)
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Voata WhatsApp Bot ON ✅"
-
-# Verificação do webhook (Meta exige GET)
-@app.route("/webhook", methods=["GET"])
-def verify():
-    mode      = request.args.get("hub.mode")
-    token     = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-    VERIFY_TOKEN = "VOATA2025"  # precisa bater com o cadastro na Meta
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge, 200
-    return "Erro: token inválido", 403
-
-# Recebimento de mensagens (POST)
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True, silent=True) or {}
-    try:
-        entry = data["entry"][0]["changes"][0]["value"]
-        if "messages" not in entry:
-            return jsonify({"status": "ignored"}), 200
-
-        message    = entry["messages"][0]
-        from_phone = message.get("from", "")
-        msg_type   = message.get("type", "text")
-
-        print("FROM_RAW:", from_phone)
-
-        if msg_type != "text":
-            send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
-            return jsonify({"status": "ok"}), 200
-
-        text = message["text"].get("body", "")
-
-        # Chama LLM
-        llm_out = run_llm(text)
-        print("---- LLM RAW ----\n", llm_out)
-
-        wa_msg, crm_json = parse_llm_output(llm_out)
-        print("---- CRM_ACTION ----\n", crm_json)
-
-        # Envia resposta
-        send_whatsapp_text(from_phone, wa_msg)
-
-        return jsonify({"status": "ok"}), 200
-
-    except Exception as e:
-        print("ERRO webhook:", repr(e))
-        return jsonify({"status": "error", "message": str(e)}), 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
-
-# ===== Z-API incoming webhook =====
-def _first_nonempty(*vals):
-    for v in vals:
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return ""
-
 @app.route("/zapi-webhook", methods=["POST"])
 def zapi_webhook():
     data = request.get_json(force=True, silent=True) or {}
-    print(">>> ZAPI IN RAW:", json.dumps(data)[:800])
+    print(">>> ZAPI IN RAW:", json.dumps(data)[:700])
 
-    # FLAGS que a Z-API costuma enviar
-    is_group        = bool(data.get("isGroup"))
-    is_newsletter   = bool(data.get("isNewsletter"))
-    from_me_root    = bool(data.get("fromMe"))
-    status_flag     = (data.get("status") or "").upper()     # e.g. SENT, DELIVERED, READ, RECEIVED
-    message_obj     = data.get("message") or {}
+    # Ignora grupos, newsletters, status e mensagens enviadas pelo próprio bot
+    if data.get("isGroup") or data.get("isNewsletter"):
+        return jsonify({"status": "ignored_group"}), 200
 
-    # Alguns planos mandam fromMe também dentro de "message"
-    from_me_nested  = bool(message_obj.get("fromMe"))
+    if data.get("fromMe") or (data.get("message") or {}).get("fromMe"):
+        return jsonify({"status": "ignored_from_me"}), 200
 
-    # Ignorar tudo que não é uma mensagem de usuário "de fora"
-    if is_group or is_newsletter:
-        print(">>> IGNORE: group/newsletter")
-        return jsonify({"status": "ignored", "reason": "group/newsletter"}), 200
+    status = (data.get("status") or "").upper()
+    if status and status not in ["RECEIVED"]:
+        return jsonify({"status": "ignored_status"}), 200
 
-    if from_me_root or from_me_nested:
-        print(">>> IGNORE: our own message (fromMe=True)")
-        return jsonify({"status": "ignored", "reason": "fromMe"}), 200
+    # Extrai remetente e texto
+    from_phone = (data.get("phone") or data.get("from") or "").strip()
+    text = (data.get("text") or (data.get("message") or {}).get("text") or "").strip()
 
-    # Muitos webhooks de status vêm sem texto – ignorar
-    if status_flag and status_flag != "RECEIVED":
-        print(f">>> IGNORE: status event {status_flag}")
-        return jsonify({"status": "ignored", "reason": f"status:{status_flag}"}), 200
+    if not from_phone or not text:
+        return jsonify({"status": "ignored_no_text"}), 200
 
-    # Extrair remetente e texto com tolerância
-    from_phone = _first_nonempty(
-        data.get("phone"),
-        data.get("from"),
-        data.get("sender"),
-        message_obj.get("from"),
-        (data.get("conversation") or {}).get("phone"),
-        (data.get("contact") or {}).get("phone"),
-    )
+    print("FROM:", from_phone, "| TEXT:", text)
 
-    text = _first_nonempty(
-        data.get("text"),
-        data.get("body"),
-        data.get("message") if isinstance(data.get("message"), str) else "",
-        message_obj.get("text"),
-        message_obj.get("body"),
-        (data.get("data") or {}).get("body"),
-    )
-
-    if not from_phone:
-        print(">>> IGNORE: no from_phone")
-        return jsonify({"status": "ignored", "reason": "no_from"}), 200
-
-    if not text:
-        print(">>> IN: sem texto -> não responder (evita loop)")
-        return jsonify({"status": "ignored", "reason": "no_text"}), 200
-
-    print("FROM_RAW_ZAPI:", from_phone)
-    print("TEXT_IN:", text[:200])
-
-    # LLM
+    # Gera resposta pelo modelo
     llm_out = run_llm(text)
-    print("---- LLM RAW (ZAPI) ----\n", llm_out)
     wa_msg, crm_json = parse_llm_output(llm_out)
-    print("---- CRM_ACTION (ZAPI) ----\n", crm_json)
 
-    # Responder
+    # Envia ao usuário
     send_whatsapp_text(from_phone, wa_msg)
+
     return jsonify({"status": "ok"}), 200
