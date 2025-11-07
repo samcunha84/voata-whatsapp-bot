@@ -183,7 +183,9 @@ def webhook():
 
         message = entry["messages"][0]
         from_phone = message["from"]
-        msg_type = message.get("type", "text")
+print("FROM_RAW:", from_phone)
+
+       msg_type = message.get("type", "text")
 
         if msg_type != "text":
             send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
