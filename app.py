@@ -4,12 +4,12 @@ import re
 from flask import Flask, request, jsonify
 import requests
 
-# ====== Config ======
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# ========= ENV =========
+WHATSAPP_TOKEN     = os.getenv("WHATSAPP_TOKEN", "")
+WHATSAPP_PHONE_ID  = os.getenv("WHATSAPP_PHONE_ID", "")  # EX.: 884755701380784  (ID numérico!)
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
 
-# ====== Prompt fixo da Voata (v1.3) ======
+# ========= PROMPT =========
 VOATA_PROMPT = """
 ## ✅ Prompt de Comando — Agente WhatsApp Voata (v1.3)
 
@@ -30,7 +30,7 @@ Estrutura da Clínica:
 
 Endereço e dados fixos:
 - Avenida Brasília, 1888 (sobreloja) – Bairro São Benedito – Santa Luzia/MG (esquina com Rua Alvorada)
-- Google Maps: https://maps.app.goo.gl/DDwjsc34BRqjpG5w6
+- Maps: https://maps.app.goo.gl/DDwjsc34BRqjpG5w6
 - Horário: Seg–Sex 08:00–18:00 | Sáb 08:00–12:00
 - Estacionamento: pago próximo e também pode estacionar na rua.
 - CRM: Simples Dental
@@ -86,128 +86,140 @@ Templates (resumidos):
     {"intent":"handoff_human","assignee":"Yasmim","reason":"dúvida clínica para avaliação interna"}
 """
 
-# ====== IA (OpenAI estilo ChatCompletion) ======
+# ========= LLM =========
 import openai
 openai.api_key = OPENAI_API_KEY
 
 def run_llm(user_text: str) -> str:
-    messages = [
-        {"role": "system", "content": VOATA_PROMPT},
-        {"role": "user", "content": f"MENSAGEM DO PACIENTE:\n{user_text}"}
-    ]
     try:
         resp = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=messages,
+            messages=[
+                {"role": "system", "content": VOATA_PROMPT},
+                {"role": "user", "content": f"MENSAGEM DO PACIENTE:\n{user_text}"}
+            ],
             temperature=0.2
         )
         return resp.choices[0].message["content"].strip()
     except Exception as e:
-        return f"WA_MSG:\n- Oi! Tivemos uma instabilidade agora. Pode repetir sua mensagem, por favor?\n\nCRM_ACTION:\n{{\"intent\":\"no_action\",\"notes\":\"erro LLM: {e}\"}}"
+        return (
+            "WA_MSG:\n"
+            "- Oi! Tivemos uma instabilidade agora. Pode repetir sua mensagem, por favor?\n\n"
+            "CRM_ACTION:\n"
+            '{"intent":"no_action","notes":"erro LLM: ' + str(e).replace('"', "'") + '"}'
+        )
 
-# ====== Util: extrair WA_MSG e CRM_ACTION ======
-WA_PATTERN = re.compile(r"WA_MSG\s*:\s*(.+?)(?:\n\n|CRM_ACTION\:)", re.DOTALL | re.IGNORECASE)
-CRM_PATTERN = re.compile(r"CRM_ACTION\s*:\s*```json\s*(\{.*?\})\s*```|CRM_ACTION\s*:\s*(\{.*?\})", re.DOTALL | re.IGNORECASE)
+# ========= Parsers =========
+WA_PATTERN  = re.compile(r"WA_MSG\s*:\s*(.+?)(?:\n\n|CRM_ACTION)", re.DOTALL | re.IGNORECASE)
+CRM_PATTERN = re.compile(
+    r"CRM_ACTION\s*:\s*```json\s*(\{.*?\})\s*```|CRM_ACTION\s*:\s*(\{.*?\})",
+    re.DOTALL | re.IGNORECASE
+)
 
 def parse_llm_output(text: str):
-    wa_match = WA_PATTERN.search(text)
-    wa_msg = ""
-    if wa_match:
-        wa_msg = wa_match.group(1).strip()
-        wa_msg = re.sub(r"^\-\s*", "", wa_msg, flags=re.MULTILINE).strip()
+    wa = ""
+    m = WA_PATTERN.search(text)
+    if m:
+        wa = re.sub(r"^\-\s*", "", m.group(1).strip(), flags=re.MULTILINE)
 
-    crm_match = CRM_PATTERN.search(text)
-    crm_json = {"intent": "no_action"}
-    if crm_match:
-        raw = crm_match.group(1) or crm_match.group(2)
-        if raw:
-            try:
-                crm_json = json.loads(raw)
-            except Exception:
-                pass
-    return wa_msg, crm_json
+    crm = {"intent": "no_action"}
+    m2 = CRM_PATTERN.search(text)
+    if m2:
+        raw = (m2.group(1) or m2.group(2) or "").strip()
+        try:
+            crm = json.loads(raw)
+        except Exception:
+            pass
+    return wa, crm
 
-# ====== WhatsApp API ======
+# ========= WhatsApp send =========
+GRAPH_VERSION = "v24.0"
+
 def send_whatsapp_text(to: str, body: str):
-    url = f"https://graph.facebook.com/v24.0/{WHATSAPP_PHONE_ID}/messages"
+    # Normaliza para E.164 sempre com '+'
+    to = (to or "").strip()
+    if not to.startswith("+"):
+        to = "+" + to
+
+    url = f"https://graph.facebook.com/{GRAPH_VERSION}/{WHATSAPP_PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
-    def _send(one_body: str):
+
+    def _send(chunk: str):
         data = {
             "messaging_product": "whatsapp",
             "to": to,
             "type": "text",
-            "text": {"body": one_body}
+            "text": {"body": chunk}
         }
         try:
             resp = requests.post(url, json=data, headers=headers, timeout=20)
-            print("=== SEND RESP ===", resp.status_code, resp.text[:300])
+            print("=== SEND RESP ===", resp.status_code, resp.text[:400])
         except Exception as e:
-            print("=== SEND ERROR ===", e)
+            print("=== SEND ERROR ===", repr(e))
 
-    lines = [l.strip() for l in body.split("\n") if l.strip()]
-    if len(lines) <= 1:
-        _send(body)
-    else:
-        for chunk in lines[:3]:
-            _send(chunk)
+    lines = [l.strip() for l in (body or "").split("\n") if l.strip()]
+    if not lines:
+        _send("Oi! Como posso te ajudar hoje na Voata? 😊")
+        return
+    for chunk in lines[:3]:  # no máximo 3 bolhas
+        _send(chunk)
 
-# ====== Flask app ======
+# ========= Flask =========
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def home():
     return "Voata WhatsApp Bot ON ✅"
 
-# Verificação do webhook (Meta exige)
+# Verificação do webhook (Meta exige GET)
 @app.route("/webhook", methods=["GET"])
 def verify():
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
+    mode      = request.args.get("hub.mode")
+    token     = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-    VERIFY_TOKEN = "VOATA2025"
+    VERIFY_TOKEN = "VOATA2025"  # precisa bater com o cadastro na Meta
     if mode == "subscribe" and token == VERIFY_TOKEN:
         return challenge, 200
     return "Erro: token inválido", 403
 
-# Recebimento de mensagens
+# Recebimento de mensagens (POST)
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.get_json(force=True, silent=True) or {}
     try:
         entry = data["entry"][0]["changes"][0]["value"]
         if "messages" not in entry:
             return jsonify({"status": "ignored"}), 200
 
-        message = entry["messages"][0]
-        from_phone = message["from"]
-print("FROM_RAW:", from_phone)
+        message    = entry["messages"][0]
+        from_phone = message.get("from", "")
+        msg_type   = message.get("type", "text")
 
-       msg_type = message.get("type", "text")
+        print("FROM_RAW:", from_phone)
 
         if msg_type != "text":
             send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
             return jsonify({"status": "ok"}), 200
 
-        text = message["text"]["body"]
+        text = message["text"].get("body", "")
 
-        llm_output = run_llm(text)
-        wa_msg, crm_json = parse_llm_output(llm_output)
+        # Chama LLM
+        llm_out = run_llm(text)
+        print("---- LLM RAW ----\n", llm_out)
 
-        print("==== LLM RAW ====\n", llm_output)
-        print("==== CRM_ACTION ====\n", crm_json)
+        wa_msg, crm_json = parse_llm_output(llm_out)
+        print("---- CRM_ACTION ----\n", crm_json)
 
-        if wa_msg:
-            send_whatsapp_text(from_phone, wa_msg)
-        else:
-            send_whatsapp_text(from_phone, "Oi! Como posso te ajudar hoje na Voata? 😊")
+        # Envia resposta
+        send_whatsapp_text(from_phone, wa_msg)
 
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        print("ERRO webhook:", e)
+        print("ERRO webhook:", repr(e))
         return jsonify({"status": "error", "message": str(e)}), 200
 
 if __name__ == "__main__":
