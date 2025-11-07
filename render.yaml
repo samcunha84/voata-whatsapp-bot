@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: voata-whatsapp-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:10000 app:app
+    plan: free
+    envVars:
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+    autoDeploy: true
