@@ -136,26 +136,28 @@ def parse_llm_output(text: str):
 GRAPH_VERSION = "v24.0"
 
 def send_whatsapp_text(to: str, body: str):
-    # Normaliza para +55...
     to = to.strip()
     if not to.startswith("+"):
         to = "+" + to
 
-    ZAPI_INSTANCE = "3E53BE161E0B2107E3C2428BC0F148DA"
-    ZAPI_TOKEN = "Ff4a66155deda48cabaa78618eb1bf981S"
+    ZAPI_INSTANCE = "3E53BE161E0B2107E3C2428BC0F148DA"  # <- CORRIGIDO (sem typos)
+    ZAPI_TOKEN = "85E59C4B87C6C6CE65A2333C"            # seu token novo
 
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
 
-    print(">>> ENVIANDO VIA Z-API PARA:", to)  # debug
+    headers = {}
+    # Se sua instância exige Client-Token (e o erro mostrou que sim), preencha abaixo:
+    CLIENT_TOKEN = "Ff4a66155deda48cabaa78618eb1bf981S"  # (o que você enviou)
+    if CLIENT_TOKEN:
+        headers["client-token"] = CLIENT_TOKEN
 
-    data = {
-        "phone": to,
-        "message": body
-    }
+    print(">>> ENVIANDO VIA Z-API PARA:", to)
+
+    data = {"phone": to, "message": body}
 
     try:
-        resp = requests.post(url, json=data, timeout=20)
-        print("=== ZAPI RESP ===", resp.status_code, resp.text[:300])
+        resp = requests.post(url, json=data, headers=headers, timeout=20)
+        print("=== ZAPI RESP ===", resp.status_code, resp.text[:400])
     except Exception as e:
         print("=== ZAPI ERROR ===", repr(e))
 
