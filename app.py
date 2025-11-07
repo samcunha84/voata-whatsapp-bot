@@ -134,24 +134,25 @@ def send_whatsapp_text(to: str, body: str):
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
     }
+    def _send(one_body: str):
+        data = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": one_body}
+        }
+        try:
+            resp = requests.post(url, json=data, headers=headers, timeout=20)
+            print("=== SEND RESP ===", resp.status_code, resp.text)
+        except Exception as e:
+            print("=== SEND ERROR ===", e)
+
     lines = [l.strip() for l in body.split("\n") if l.strip()]
     if len(lines) <= 1:
-        data = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": body}
-        }
-        requests.post(url, json=data, headers=headers)
-        return
-    for chunk in lines[:3]:
-        data = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "text",
-            "text": {"body": chunk}
-        }
-        requests.post(url, json=data, headers=headers)
+        _send(body)
+    else:
+        for chunk in lines[:3]:
+            _send(chunk)
 
 # ====== Flask app ======
 app = Flask(__name__)
