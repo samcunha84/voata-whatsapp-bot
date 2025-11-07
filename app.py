@@ -161,65 +161,92 @@ def send_whatsapp_text(to: str, body: str):
 app = Flask(__name__)
 
 # ===== Z-API incoming webhook =====
-def _first_str(*vals):
-    for v in vals:
-        if isinstance(v, str) and v.strip():
-            return v.strip()
+# ===== Z-API incoming webhook =====
+def _coerce_str(v):
+    return v.strip() if isinstance(v, str) else ""
+
+def _take(d, *paths):
+    """pega o primeiro valor str que existir dentre vários caminhos"""
+    for p in paths:
+        cur = d
+        try:
+            for k in p:
+                cur = cur[k]
+            if isinstance(cur, str) and cur.strip():
+                return cur.strip()
+        except Exception:
+            pass
     return ""
+
+def _normalize_phone(raw):
+    """aceita 5531999..., +5531999..., 5531999@c.us e devolve +55..."""
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    # remove sufixo @c.us, @s.whatsapp.net, etc
+    s = s.split("@")[0]
+    # remove caracteres não numéricos exceto +
+    if s.startswith("+"):
+        digits = "+" + "".join(ch for ch in s[1:] if ch.isdigit())
+    else:
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if not digits.startswith("+"):
+            digits = "+" + digits
+    return digits
 
 @app.route("/zapi-webhook", methods=["POST"])
 def zapi_webhook():
     data = request.get_json(force=True, silent=True) or {}
-    print(">>> ZAPI IN RAW:", json.dumps(data)[:700])
+    print(">>> ZAPI IN RAW:", json.dumps(data)[:800])
 
-    # 1) Evitar loops e eventos não-texto
-    if data.get("fromMe") is True:
+    # 1) ignore tudo que for resposta do próprio número (evita loop)
+    from_me = False
+    if isinstance(data.get("fromMe"), bool):
+        from_me = data.get("fromMe")
+    elif isinstance(data.get("fromMe"), str):
+        from_me = data.get("fromMe").lower() in ("1", "true", "yes")
+    if from_me:
         return jsonify({"status": "ignored", "reason": "fromMe"}), 200
     if data.get("isStatusReply") is True:
         return jsonify({"status": "ignored", "reason": "statusReply"}), 200
-    if data.get("isGroup") is True or data.get("isNewsletter") is True:
-        return jsonify({"status": "ignored", "reason": "group/newsletter"}), 200
 
-    # 2) Extrair phone do remetente (tolerante a variações)
-    from_phone = _first_str(
-        data.get("phone"),
-        data.get("from"),
-        data.get("sender"),
-        (data.get("message") or {}).get("from"),
-        (data.get("conversation") or {}).get("phone"),
-        (data.get("contact") or {}).get("phone"),
+    # 2) extrair telefone do remetente
+    from_phone = _coerce_str(data.get("phone")) \
+                 or _coerce_str(data.get("from")) \
+                 or _coerce_str(data.get("sender")) \
+                 or _take(data, ("message", "from")) \
+                 or _take(data, ("conversation", "phone")) \
+                 or _take(data, ("contact", "phone")) \
+                 or _coerce_str(data.get("chatId"))
+
+    from_phone = _normalize_phone(from_phone)
+    if not from_phone or len(from_phone) < 12:
+        print(">>> ZAPI IN: sem from_phone; ignorado")
+        return jsonify({"status": "ignored", "reason": "no_from_phone"}), 200
+    print("FROM_RAW_ZAPI:", from_phone)
+
+    # 3) extrair texto (cobre variações de payload)
+    text = (
+        _coerce_str(data.get("text"))
+        or _coerce_str(data.get("message"))           # quando vem direto
+        or _coerce_str(data.get("body"))
+        or _take(data, ("message", "text"))
+        or _take(data, ("message", "body"))
+        or _take(data, ("data", "body"))
+        or _take(data, ("payload", "message", "text"))
     )
-    if not from_phone:
-        print(">>> ZAPI IN: sem 'phone' — ignorado")
-        return jsonify({"status": "ignored", "reason": "no phone"}), 200
-
-    # 3) Extrair texto: pode vir como string ou dentro de dict
-    msg_field = data.get("message")
-    text_candidates = [
-        data.get("text"),
-        data.get("body"),
-        (msg_field if isinstance(msg_field, str) else None),
-        (msg_field or {}).get("text") if isinstance(msg_field, dict) else None,
-        (msg_field or {}).get("body") if isinstance(msg_field, dict) else None,
-        (data.get("data") or {}).get("body"),
-    ]
-    text = _first_str(*text_candidates)
+    print("TEXT_IN:", text[:200])
 
     if not text:
-        print(">>> ZAPI IN: sem 'text' — enviando aviso uma ÚNICA vez")
+        # não é mensagem de texto (áudio, imagem, etc.)
         send_whatsapp_text(from_phone, "Oi! Por enquanto consigo entender apenas mensagens de texto 😊")
         return jsonify({"status": "ok"}), 200
 
-    print("FROM_RAW_ZAPI:", from_phone)
-    print("TEXT_IN:", text[:200])
-
-    # 4) LLM -> resposta
+    # 4) chama LLM e responde
     llm_out = run_llm(text)
     print("---- LLM RAW (ZAPI) ----\n", llm_out)
     wa_msg, crm_json = parse_llm_output(llm_out)
     print("---- CRM_ACTION (ZAPI) ----\n", crm_json)
 
-    # 5) Responder
     send_whatsapp_text(from_phone, wa_msg)
     return jsonify({"status": "ok"}), 200
-
